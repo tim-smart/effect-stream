@@ -1,5 +1,8 @@
+import type { Cause } from "effect"
+import { Queue } from "effect"
 import * as Effect from "effect/Effect"
 import * as Stream from "effect/Stream"
+import * as Channel from "./Channel.js"
 import * as Stream2 from "./Stream.js"
 
 console.time("current")
@@ -51,3 +54,26 @@ console.timeEnd("new")
 //   Channel.runCollect,
 //   Effect.runSync
 // )
+
+Effect.gen(function*(_) {
+  const queue = yield* _(Queue.unbounded<number>())
+  const input = Channel.input({
+    onInput(input: number) {
+      return Queue.offer(queue, input)
+    },
+    onFailure(cause: Cause.Cause<unknown>) {
+      return Effect.unit
+    },
+    onDone() {
+      return Queue.shutdown(queue)
+    }
+  })
+  const a = Channel.fromQueue(queue).pipe(
+    Channel.embedInput(input)
+  )
+  yield* _(
+    Channel.range(1, 10),
+    Channel.pipeTo(a),
+    Channel.runForEach(Effect.log)
+  )
+}).pipe(Effect.runPromise)

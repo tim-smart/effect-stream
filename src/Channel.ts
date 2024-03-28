@@ -8,9 +8,10 @@ import type { LazyArg } from "effect/Function"
 import { dual, identity } from "effect/Function"
 import * as Option from "effect/Option"
 import type { Pipeable } from "effect/Pipeable"
+import * as Queue from "effect/Queue"
 import * as Scope from "effect/Scope"
 import type * as Types from "effect/Types"
-import { Executor, isEOFCause, rescueEOF } from "./internal/executor.js"
+import { dieEOF, Executor, isEOFCause, rescueEOF } from "./internal/executor.js"
 import * as Ops from "./internal/ops.js"
 
 /**
@@ -36,6 +37,28 @@ export interface Channel<O, I = unknown, E = never, IE = unknown, R = never> ext
     readonly _E: Types.Covariant<E>
     readonly _IE: Types.Contravariant<IE>
     readonly _R: Types.Contravariant<R>
+  }
+}
+
+/**
+ * @since 1.0.0
+ * @category models
+ */
+export declare namespace Channel {
+  /**
+   * @since 1.0.0
+   * @category models
+   */
+  export interface Input<
+    I = any,
+    IE = any,
+    RI = unknown,
+    RF = unknown,
+    RD = unknown
+  > {
+    readonly onInput: (input: I) => Effect.Effect<void, never, RI>
+    readonly onFailure: (cause: Cause.Cause<IE>) => Effect.Effect<void, never, RF>
+    readonly onDone: () => Effect.Effect<void, never, RD>
   }
 }
 
@@ -204,14 +227,43 @@ export const repeatSync = <O>(evaluate: LazyArg<O>): Channel<O> => new Ops.Repea
  * @since 1.0.0
  * @category constructors
  */
+export const fromQueue = <O>(queue: Queue.Dequeue<O>): Channel<O> =>
+  repeatEffect(
+    Effect.catchAllCause(
+      Queue.take(queue),
+      () => dieEOF
+    )
+  )
+
+/**
+ * @since 1.0.0
+ * @category constructors
+ */
+export const fromQueueExit = <A, E>(queue: Queue.Dequeue<Exit.Exit<A, E>>): Channel<A, unknown, E> =>
+  repeatEffect(
+    Effect.flatMap(
+      Queue.take(queue),
+      (exit) =>
+        exit._tag === "Success"
+          ? Effect.succeed(exit.value)
+          : Cause.isEmpty(exit.cause)
+          ? dieEOF
+          : Effect.failCause(exit.cause)
+    )
+  )
+
+/**
+ * @since 1.0.0
+ * @category constructors
+ */
 export const fromIterable = <O>(iterable: Iterable<O>): Channel<O> =>
   suspend(() => {
     const iterator = iterable[Symbol.iterator]()
-    return repeatEffectOption(
+    return repeatEffect(
       Effect.suspend(() => {
         const result = iterator.next()
         return result.done
-          ? Effect.fail(Option.none())
+          ? dieEOF
           : Effect.succeed(result.value)
       })
     )
@@ -225,9 +277,9 @@ export const fromArray = <O>(array: ReadonlyArray<O>): Channel<O> =>
   suspend(() => {
     const length = array.length
     let i = 0
-    return repeatEffectOption(Effect.suspend((): Effect.Effect<O, Option.Option<never>> => {
+    return repeatEffect(Effect.suspend((): Effect.Effect<O> => {
       if (i >= length) {
-        return Effect.fail(Option.none())
+        return dieEOF
       }
       return Effect.succeed(array[i++])
     }))
@@ -246,11 +298,11 @@ export const range = (start: number, end?: number): Channel<number> =>
     : suspend(() => {
       const actualEnd = start > end ? 1 : end - start + 1
       let i = start
-      return repeatEffectOption(
+      return repeatEffect(
         Effect.suspend(() => {
           const value = i++
           return value > actualEnd
-            ? Effect.fail(Option.none())
+            ? dieEOF
             : Effect.succeed(value)
         })
       )
@@ -627,6 +679,34 @@ export const pipeTo: {
     self: Channel<O, I, E, IE, R>,
     that: Channel<O2, I2, E2, IE2, R2>
   ): Channel<O2, I, E2, IE, R | R2> => new Ops.PipeTo(self as any, that as any).fused() as any
+)
+
+/**
+ * @since 1.0.0
+ * @category input
+ */
+export const input = <I, IE, RI, RF, RD>(input: Channel.Input<I, IE, RI, RF, RD>) => input
+
+/**
+ * @since 1.0.0
+ * @category input
+ */
+export const embedInput: {
+  <I2, IE2, R2, R3, R4>(
+    input: Channel.Input<I2, IE2, R2, R3, R4>
+  ): <O, I, E, IE, R>(
+    self: Channel<O, I, E, IE, R>
+  ) => Channel<O, I2, E, IE2, R | R2 | R3 | R4>
+  <O, I, E, IE, R, I2, IE2, R2, R3, R4>(
+    self: Channel<O, I, E, IE, R>,
+    input: Channel.Input<I2, IE2, R2, R3, R4>
+  ): Channel<O, I2, E, IE2, R | R2 | R3 | R4>
+} = dual(
+  2,
+  <O, I, E, IE, R, O2, I2, IE2, R2, R3, R4>(
+    self: Channel<O, I, E, IE, R>,
+    input: Channel.Input<I2, IE2, R2, R3, R4>
+  ): Channel<O2, I2, E, IE2, R | R2 | R3 | R4> => new Ops.EmbedInput(input, self as any) as any
 )
 
 const makePull = <O, I, E, IE, R>(

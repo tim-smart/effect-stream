@@ -1,11 +1,13 @@
 /**
  * @since 1.0.0
  */
+import * as Chunk from "effect/Chunk"
 import * as Effect from "effect/Effect"
 import type { LazyArg } from "effect/Function"
 import { dual } from "effect/Function"
 import * as Option from "effect/Option"
 import { type Pipeable, pipeArguments } from "effect/Pipeable"
+import * as Queue from "effect/Queue"
 import * as Channel from "./Channel.js"
 
 const DefaultChunkSize = 4096
@@ -102,6 +104,23 @@ export const fromIterable = <A>(iterable: Iterable<A>, chunkSize = DefaultChunkS
       return Effect.succeed(chunk)
     }))
   })
+  return fromChannel(channel)
+}
+
+/**
+ * @since 1.0.0
+ * @category constructors
+ */
+export const fromQueue = <A>(queue: Queue.Dequeue<A>, chunkSize = DefaultChunkSize): Stream<A> => {
+  const channel = Channel.repeatEffectOption(
+    Effect.catchAllCause(
+      Effect.map(
+        Queue.takeBetween(queue, 1, chunkSize),
+        Chunk.toReadonlyArray
+      ) as Effect.Effect<Array<A>>,
+      (_) => Effect.fail(Option.none())
+    )
+  )
   return fromChannel(channel)
 }
 

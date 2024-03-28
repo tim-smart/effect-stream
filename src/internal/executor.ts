@@ -6,7 +6,7 @@ import * as Scope from "effect/Scope"
 import type * as Ops from "./ops.js"
 
 const EOF = Symbol.for("effect/Channel/EOF")
-const dieEmpty = Effect.die(EOF)
+export const dieEOF = Effect.die(EOF)
 
 /** @internal */
 export const isEOFCause = <E>(cause: Cause.Cause<E>): cause is Cause.Die & {
@@ -30,7 +30,7 @@ export class Executor {
     readonly scope: Scope.Scope
   ) {}
 
-  input: Effect.Effect<unknown, unknown, unknown> = dieEmpty
+  input: Effect.Effect<unknown, unknown, unknown> = dieEOF
 
   evaluate(op: Ops.Operation): Effect.Effect<unknown, unknown, unknown> {
     return this[op._op](op as any)
@@ -55,7 +55,7 @@ export class Executor {
     })
   }
   Empty(_op: Ops.Empty): Effect.Effect<unknown, unknown, unknown> {
-    return dieEmpty
+    return dieEOF
   }
   Never(_op: Ops.Never): Effect.Effect<unknown, unknown, unknown> {
     return Effect.never
@@ -64,7 +64,7 @@ export class Executor {
     let emitted = false
     return Effect.suspend(() => {
       if (emitted) {
-        return dieEmpty
+        return dieEOF
       }
       emitted = true
       return Effect.succeed(op.value)
@@ -74,7 +74,7 @@ export class Executor {
     let emitted = false
     return Effect.suspend(() => {
       if (emitted) {
-        return dieEmpty
+        return dieEOF
       }
       emitted = true
       return op.effect
@@ -86,26 +86,26 @@ export class Executor {
   RepeatOption(op: Ops.RepeatOption): Effect.Effect<unknown, unknown, unknown> {
     return Effect.suspend(() => {
       const value = op.evaluate()
-      return value._tag === "Some" ? Effect.succeed(value.value) : dieEmpty
+      return value._tag === "Some" ? Effect.succeed(value.value) : dieEOF
     })
   }
   Sync(op: Ops.Sync): Effect.Effect<unknown, unknown, unknown> {
     let emitted = false
     return Effect.suspend(() => {
       if (emitted) {
-        return dieEmpty
+        return dieEOF
       }
       emitted = true
       return Effect.sync(op.evaluate)
     })
   }
   Suspend(op: Ops.Suspend): Effect.Effect<unknown, unknown, unknown> {
-    let nextOpEffect: Effect.Effect<unknown, unknown, unknown>
+    let currentEffect: Effect.Effect<unknown, unknown, unknown>
     return Effect.suspend(() => {
-      if (nextOpEffect === undefined) {
-        nextOpEffect = this.evaluate(op.evaluate())
+      if (currentEffect === undefined) {
+        currentEffect = this.evaluate(op.evaluate())
       }
-      return nextOpEffect
+      return currentEffect
     })
   }
   Failure(op: Ops.Failure): Effect.Effect<unknown, unknown, unknown> {
@@ -162,7 +162,7 @@ export class Executor {
     let i = 0
     return Effect.flatMap(upstreamEffect, (value) => {
       const pass = op.predicate(value, i++)
-      return pass ? Effect.succeed(value) : dieEmpty
+      return pass ? Effect.succeed(value) : dieEOF
     })
   }
   Drop(op: Ops.Drop): Effect.Effect<unknown, unknown, unknown> {
@@ -241,7 +241,7 @@ export class Executor {
       }
       return Effect.catchAllCause(upstreamEffect, (cause) => {
         if (isEOFCause(cause)) {
-          return dieEmpty
+          return dieEOF
         }
         downstreamEffect = this.evaluate(op.onFailure(cause))
         return downstreamEffect
@@ -253,7 +253,7 @@ export class Executor {
   ): Effect.Effect<unknown, unknown, unknown> {
     return Effect.catchAllCause(this.evaluate(op.upstream), (cause) => {
       if (isEOFCause(cause)) {
-        return dieEmpty
+        return dieEOF
       }
       return op.onFailure(cause)
     })
@@ -284,7 +284,7 @@ export class Executor {
           },
           onFailure: (cause) => {
             if (isEOFCause(cause)) {
-              return dieEmpty
+              return dieEOF
             }
             downstreamEffect = this.evaluate(op.onFailure(cause))
             return downstreamEffect
@@ -300,7 +300,7 @@ export class Executor {
     let emitted = false
     return Effect.suspend(() => {
       if (emitted) {
-        return dieEmpty
+        return dieEOF
       }
       emitted = true
       return Effect.uninterruptible(
@@ -349,6 +349,26 @@ export class Executor {
         downstreamEffect = this.evaluate(op.downstream)
         return downstreamEffect
       })
+    })
+  }
+  EmbedInput(op: Ops.EmbedInput): Effect.Effect<unknown, unknown, unknown> {
+    const input = op.input
+    const output = this.evaluate(op.output)
+    const fork = Effect.interruptible(Effect.forkIn(
+      Effect.forever(Effect.matchCauseEffect(this.input, {
+        onFailure: (cause) => isEOFCause(cause) ? input.onDone() : input.onFailure(cause),
+        onSuccess: (value) => input.onInput(value)
+      })),
+      this.scope
+    ))
+
+    let emitted = false
+    return Effect.suspend(() => {
+      if (emitted) {
+        return output
+      }
+      emitted = true
+      return Effect.zipRight(fork, output)
     })
   }
 

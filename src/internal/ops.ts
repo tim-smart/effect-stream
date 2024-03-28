@@ -38,6 +38,7 @@ export type Operation =
   | OnFailureEffect
   | OnSuccessOrFailure
   | PipeTo
+  | EmbedInput
   | AcquireRelease
   | Ensuring
 
@@ -675,6 +676,16 @@ export class PipeTo extends BaseTransform("PipeTo") {
     readonly downstream: Operation
   ) {
     super(upstream)
+  }
+}
+
+/** @internal */
+export class EmbedInput extends Base("EmbedInput") {
+  constructor(
+    readonly input: Channel.Channel.Input<any, any, unknown, unknown>,
+    readonly output: Operation
+  ) {
+    super()
   }
 }
 
