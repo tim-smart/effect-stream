@@ -178,7 +178,27 @@ export const mapEffect: {
   <A, E, R, B, E2, R2>(
     self: Stream<A, E, R>,
     f: (o: NoInfer<A>) => Effect.Effect<B, E2, R2>
-  ): Stream<B, E | E2, R | R2> => fromChannel(Channel.mapEffect(self.channel, Effect.forEach(f)))
+  ): Stream<B, E | E2, R | R2> => fromChannel(Channel.mapChunkEffect(self.channel, f))
+)
+
+/**
+ * @since 1.0.0
+ * @category mapping
+ */
+export const tap: {
+  <A, B, E2, R2>(
+    f: (o: NoInfer<A>) => Effect.Effect<B, E2, R2>
+  ): <E, R>(self: Stream<A, E, R>) => Stream<A, E | E2, R | R2>
+  <A, E, R, B, E2, R2>(
+    self: Stream<A, E, R>,
+    f: (o: NoInfer<A>) => Effect.Effect<B, E2, R2>
+  ): Stream<A, E | E2, R | R2>
+} = dual(
+  2,
+  <A, E, R, B, E2, R2>(
+    self: Stream<A, E, R>,
+    f: (o: NoInfer<A>) => Effect.Effect<B, E2, R2>
+  ): Stream<A, E | E2, R | R2> => fromChannel(Channel.mapChunkEffect(self.channel, (a) => Effect.as(f(a), a)))
 )
 
 /**

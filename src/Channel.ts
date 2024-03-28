@@ -5,12 +5,12 @@ import * as Cause from "effect/Cause"
 import * as Effect from "effect/Effect"
 import type * as Exit from "effect/Exit"
 import type { LazyArg } from "effect/Function"
-import { dual } from "effect/Function"
+import { dual, identity } from "effect/Function"
 import * as Option from "effect/Option"
 import type { Pipeable } from "effect/Pipeable"
-import type * as Scope from "effect/Scope"
+import * as Scope from "effect/Scope"
 import type * as Types from "effect/Types"
-import { Executor, rescueEOF } from "./internal/executor.js"
+import { Executor, isEOFCause, rescueEOF } from "./internal/executor.js"
 import * as Ops from "./internal/ops.js"
 
 /**
@@ -190,6 +190,14 @@ export const repeatEffectOption = <O, E, R>(
  * @since 1.0.0
  * @category constructors
  */
+export const repeatOption = <O>(
+  evaluate: LazyArg<Option.Option<O>>
+): Channel<O> => new Ops.RepeatOption(evaluate) as any
+
+/**
+ * @since 1.0.0
+ * @category constructors
+ */
 export const repeatSync = <O>(evaluate: LazyArg<O>): Channel<O> => new Ops.RepeatEffect(Effect.sync(evaluate)) as any
 
 /**
@@ -207,6 +215,22 @@ export const fromIterable = <O>(iterable: Iterable<O>): Channel<O> =>
           : Effect.succeed(result.value)
       })
     )
+  })
+
+/**
+ * @since 1.0.0
+ * @category constructors
+ */
+export const fromArray = <O>(array: ReadonlyArray<O>): Channel<O> =>
+  suspend(() => {
+    const length = array.length
+    let i = 0
+    return repeatEffectOption(Effect.suspend((): Effect.Effect<O, Option.Option<never>> => {
+      if (i >= length) {
+        return Effect.fail(Option.none())
+      }
+      return Effect.succeed(array[i++])
+    }))
   })
 
 /**
@@ -272,6 +296,72 @@ export const mapEffect: {
     self: Channel<O, I, E, IE, R>,
     f: (o: NoInfer<O>) => Effect.Effect<O2, E2, R2>
   ): Channel<O2, I, E | E2, IE, R | R2> => new Ops.OnSuccessEffect(self as any, f).fused() as any
+)
+
+/**
+ * @since 1.0.0
+ * @category mapping
+ */
+export const tap: {
+  <O, O2, E2, R2>(
+    f: (o: NoInfer<O>) => Effect.Effect<O2, E2, R2>
+  ): <I, E, IE, R>(
+    self: Channel<O, I, E, IE, R>
+  ) => Channel<O, I, E | E2, IE, R | R2>
+  <O, I, E, IE, R, O2, E2, R2>(
+    self: Channel<O, I, E, IE, R>,
+    f: (o: NoInfer<O>) => Effect.Effect<O2, E2, R2>
+  ): Channel<O, I, E | E2, IE, R | R2>
+} = dual(
+  2,
+  <O, I, E, IE, R, O2, E2, R2>(
+    self: Channel<O, I, E, IE, R>,
+    f: (o: NoInfer<O>) => Effect.Effect<O2, E2, R2>
+  ): Channel<O, I, E | E2, IE, R | R2> => new Ops.OnSuccessEffect(self as any, (o) => Effect.as(f(o), o)).fused() as any
+)
+
+/**
+ * @since 1.0.0
+ * @category mapping
+ */
+export const mapEffectPar: {
+  <O, O2, E2, R2>(
+    f: (o: NoInfer<O>) => Effect.Effect<O2, E2, R2>
+  ): <I, E, IE, R>(
+    self: Channel<O, I, E, IE, R>
+  ) => Channel<O2, I, E | E2, IE, R | R2>
+  <O, I, E, IE, R, O2, E2, R2>(
+    self: Channel<O, I, E, IE, R>,
+    f: (o: NoInfer<O>) => Effect.Effect<O2, E2, R2>
+  ): Channel<O2, I, E | E2, IE, R | R2>
+} = dual(
+  2,
+  <O, I, E, IE, R, O2, E2, R2>(
+    self: Channel<O, I, E, IE, R>,
+    f: (o: NoInfer<O>) => Effect.Effect<O2, E2, R2>
+  ): Channel<O2, I, E | E2, IE, R | R2> => new Ops.OnSuccessEffect(self as any, f).fused() as any
+)
+
+/**
+ * @since 1.0.0
+ * @category mapping
+ */
+export const mapChunkEffect: {
+  <O, O2, E2, R2>(
+    f: (o: NoInfer<O>) => Effect.Effect<O2, E2, R2>
+  ): <I, E, IE, R>(
+    self: Channel<Array<O>, I, E, IE, R>
+  ) => Channel<Array<O2>, I, E | E2, IE, R | R2>
+  <O, I, E, IE, R, O2, E2, R2>(
+    self: Channel<Array<O>, I, E, IE, R>,
+    f: (o: NoInfer<O>) => Effect.Effect<O2, E2, R2>
+  ): Channel<Array<O2>, I, E | E2, IE, R | R2>
+} = dual(
+  2,
+  <O, I, E, IE, R, O2, E2, R2>(
+    self: Channel<Array<O>, I, E, IE, R>,
+    f: (o: NoInfer<O>) => Effect.Effect<O2, E2, R2>
+  ): Channel<Array<O2>, I, E | E2, IE, R | R2> => new Ops.OnSuccessChunkEffect(self as any, f).fused() as any
 )
 
 /**
@@ -412,6 +502,65 @@ export const flatMap: {
 
 /**
  * @since 1.0.0
+ * @category mapping
+ */
+export const flatten = <O, I, E, IE, R, I2, E2, IE2, R2>(
+  self: Channel<Channel<O, I2, E2, IE2, R2>, I, E, IE, R>
+): Channel<O, I, E | E2, IE, R | R2> => flatMap(self, identity)
+
+/**
+ * @since 1.0.0
+ * @category mapping
+ */
+export const unwrap = <O, I, E, IE, R, E2, R2>(
+  effect: Effect.Effect<Channel<O, I, E, IE, R>, E2, R2>
+): Channel<O, I, E | E2, IE, R | R2> => flatten(fromEffect(effect))
+
+/**
+ * @since 1.0.0
+ * @category mapping
+ */
+export const unwrapScoped = <O, I, E, IE, R, E2, R2>(
+  effect: Effect.Effect<Channel<O, I, E, IE, R>, E2, R2>
+): Channel<O, I, E | E2, IE, R | Exclude<R2, Scope.Scope>> =>
+  unwrap(
+    Effect.flatMap(Scope.make(), (scope) =>
+      Effect.uninterruptibleMask((restore) =>
+        Scope.extend(
+          Effect.map(effect, (channel) =>
+            ensuring(
+              channel,
+              (exit) => restore(Scope.close(scope, exit))
+            )),
+          scope
+        )
+      ))
+  )
+
+/**
+ * @since 1.0.0
+ * @category mapping
+ */
+export const concat: {
+  <O2, I2, E2, IE2, R2>(
+    that: Channel<O2, I2, E2, IE2, R2>
+  ): <O, I, E, IE, R>(
+    self: Channel<O, I, E, IE, R>
+  ) => Channel<O | O2, I & I2, E | E2, I & IE, R | R2>
+  <O, I, E, IE, R, O2, I2, E2, IE2, R2>(
+    self: Channel<O, I, E, IE, R>,
+    that: Channel<O2, I2, E2, IE2, R2>
+  ): Channel<O | O2, I & I2, E | E2, I & IE, R | R2>
+} = dual(
+  2,
+  <O, I, E, IE, R, O2, I2, E2, IE2, R2>(
+    self: Channel<O, I, E, IE, R>,
+    that: Channel<O2, I2, E2, IE2, R2>
+  ): Channel<O | O2, I & I2, E | E2, I & IE, R | R2> => new Ops.Continue(self as any, that as any).fused() as any
+)
+
+/**
+ * @since 1.0.0
  * @category error handling
  */
 export const catchCause: {
@@ -486,6 +635,22 @@ const makePull = <O, I, E, IE, R>(
   Effect.map(
     Effect.scope,
     (scope) => new Executor(self as any, scope).toPull() as any
+  )
+
+/**
+ * @since 1.0.0
+ * @category execution
+ */
+export const toPull = <O, I, E, IE, R>(
+  self: Channel<O, I, E, IE, R>
+): Effect.Effect<Effect.Effect<O, Option.Option<E>, R>, never, Scope.Scope> =>
+  Effect.map(
+    makePull(self),
+    (pull) =>
+      Effect.catchAllCause(
+        pull,
+        (cause) => isEOFCause(cause) ? Effect.fail(Option.none()) : Effect.failCause(Cause.map(cause, Option.some))
+      )
   )
 
 /**

@@ -9,7 +9,9 @@ const EOF = Symbol.for("effect/Channel/EOF")
 const dieEmpty = Effect.die(EOF)
 
 /** @internal */
-export const isEOFCause = <E>(cause: Cause.Cause<E>) => cause._tag === "Die" && cause.defect === EOF
+export const isEOFCause = <E>(cause: Cause.Cause<E>): cause is Cause.Die & {
+  readonly defect: typeof EOF
+} => cause._tag === "Die" && cause.defect === EOF
 
 /** @internal */
 export const rescueEOF = <E>(
@@ -35,9 +37,21 @@ export class Executor {
   }
 
   Read(op: Ops.Read): Effect.Effect<unknown, unknown, unknown> {
-    return Effect.matchCauseEffect(this.input, {
-      onSuccess: (a) => this.evaluate(op.onInput(a)),
-      onFailure: (cause) => this.evaluate(isEOFCause(cause) ? op.onDone() : op.onFailure(cause))
+    let currentEffect: Effect.Effect<unknown, unknown, unknown> | undefined
+    return Effect.suspend(() => {
+      if (currentEffect !== undefined) {
+        return currentEffect
+      }
+      return Effect.matchCauseEffect(this.input, {
+        onSuccess: (a) => {
+          currentEffect = this.evaluate(op.onInput(a))
+          return currentEffect
+        },
+        onFailure: (cause) => {
+          currentEffect = this.evaluate(isEOFCause(cause) ? op.onDone() : op.onFailure(cause))
+          return currentEffect
+        }
+      })
     })
   }
   Empty(_op: Ops.Empty): Effect.Effect<unknown, unknown, unknown> {
@@ -68,6 +82,12 @@ export class Executor {
   }
   RepeatEffect(op: Ops.RepeatEffect): Effect.Effect<unknown, unknown, unknown> {
     return op.effect
+  }
+  RepeatOption(op: Ops.RepeatOption): Effect.Effect<unknown, unknown, unknown> {
+    return Effect.suspend(() => {
+      const value = op.evaluate()
+      return value._tag === "Some" ? Effect.succeed(value.value) : dieEmpty
+    })
   }
   Sync(op: Ops.Sync): Effect.Effect<unknown, unknown, unknown> {
     let emitted = false
@@ -187,6 +207,30 @@ export class Executor {
     op: Ops.OnSuccessEffect
   ): Effect.Effect<unknown, unknown, unknown> {
     return Effect.flatMap(this.evaluate(op.upstream), op.onSuccess)
+  }
+  OnSuccessChunkEffect(
+    op: Ops.OnSuccessChunkEffect
+  ): Effect.Effect<unknown, unknown, unknown> {
+    const upstreamEffect = this.evaluate(op.upstream)
+    let currentChunk: Array<unknown> | undefined
+    let i = 0
+    const onSuccess = (o: unknown) => Effect.map(op.onSuccess(o), (b) => [b])
+    const loop: Effect.Effect<Array<unknown>, unknown, unknown> = Effect.suspend(() => {
+      if (currentChunk !== undefined) {
+        if (i >= currentChunk.length) {
+          currentChunk = undefined
+          i = 0
+          return loop
+        }
+        const value = currentChunk[i++]
+        return onSuccess(value)
+      }
+      return Effect.flatMap(upstreamEffect, (chunk) => {
+        currentChunk = chunk as any
+        return loop
+      })
+    })
+    return loop
   }
   OnFailure(op: Ops.OnFailure): Effect.Effect<unknown, unknown, unknown> {
     const upstreamEffect = this.evaluate(op.upstream)

@@ -1,6 +1,7 @@
 import * as Cause from "effect/Cause"
 import * as Effect from "effect/Effect"
 import type * as Exit from "effect/Exit"
+import type { LazyArg } from "effect/Function"
 import * as Option from "effect/Option"
 import { pipeArguments } from "effect/Pipeable"
 import type * as Channel from "../Channel.js"
@@ -19,6 +20,7 @@ export type Operation =
   | Success
   | FromEffect
   | RepeatEffect
+  | RepeatOption
   | Sync
   | Suspend
   | Failure
@@ -31,6 +33,7 @@ export type Operation =
   | Drop
   | OnSuccess
   | OnSuccessEffect
+  | OnSuccessChunkEffect
   | OnFailure
   | OnFailureEffect
   | OnSuccessOrFailure
@@ -231,15 +234,33 @@ export class RepeatEffect extends Base("RepeatEffect") {
   optimize(downstream: TransformOp): Operation {
     switch (downstream._op) {
       case "OnSuccessEffect": {
-        return new FromEffect(Effect.flatMap(this.effect, downstream.onSuccess))
+        return new RepeatEffect(Effect.flatMap(this.effect, downstream.onSuccess))
       }
       case "OnFailureEffect": {
-        return new FromEffect(
+        return new RepeatEffect(
           Effect.catchAllCause(this.effect, downstream.onFailure)
         )
       }
       case "Map": {
-        return new FromEffect(Effect.map(this.effect, downstream.transform))
+        return new RepeatEffect(Effect.map(this.effect, downstream.transform))
+      }
+      default: {
+        return downstream
+      }
+    }
+  }
+}
+
+/** @internal */
+export class RepeatOption extends Base("RepeatOption") {
+  constructor(readonly evaluate: LazyArg<Option.Option<unknown>>) {
+    super()
+  }
+
+  optimize(downstream: TransformOp): Operation {
+    switch (downstream._op) {
+      case "Map": {
+        return new RepeatOption(() => Option.map(this.evaluate(), downstream.transform))
       }
       default: {
         return downstream
@@ -513,6 +534,31 @@ export class OnSuccess extends BaseTransform("OnSuccess") {
 
 /** @internal */
 export class OnSuccessEffect extends BaseTransform("OnSuccessEffect") {
+  constructor(
+    upstream: Operation,
+    readonly onSuccess: (a: any) => Effect.Effect<unknown, unknown, unknown>
+  ) {
+    super(upstream)
+  }
+
+  optimize(downstream: TransformOp): Operation {
+    switch (downstream._op) {
+      case "OnSuccessEffect": {
+        const onSuccess = this.onSuccess
+        return new OnSuccessEffect(this.upstream, (a) => Effect.flatMap(onSuccess(a), downstream.onSuccess))
+      }
+      case "Map": {
+        return new OnSuccessEffect(this.upstream, (a) => Effect.map(this.onSuccess(a), downstream.transform))
+      }
+      default: {
+        return downstream
+      }
+    }
+  }
+}
+
+/** @internal */
+export class OnSuccessChunkEffect extends BaseTransform("OnSuccessChunkEffect") {
   constructor(
     upstream: Operation,
     readonly onSuccess: (a: any) => Effect.Effect<unknown, unknown, unknown>
