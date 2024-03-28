@@ -1,0 +1,82 @@
+{
+  "name": "effect-stream",
+  "version": "0.0.0",
+  "publishConfig": {
+    "access": "public",
+    "directory": "dist"
+  },
+  "packageManager": "pnpm@8.12.1",
+  "description": "A experimental Stream package for Effect",
+  "engines": {
+    "node": ">=16.17.1"
+  },
+  "scripts": {
+    "version": "changeset version && pnpm install --no-frozen-lockfile",
+    "release": "pnpm run build && changeset publish",
+    "lint": "eslint . --ext .ts,.tsx",
+    "autofix": "pnpm lint --fix",
+    "codegen": "build-utils prepare-v2",
+    "build": "pnpm codegen && pnpm build-esm && pnpm build-cjs && pnpm build-annotate && build-utils pack-v2",
+    "build-esm": "tsc -b tsconfig.build.json",
+    "build-cjs": "babel build/esm --plugins @babel/transform-export-namespace-from --plugins @babel/transform-modules-commonjs --out-dir build/cjs --source-maps",
+    "build-annotate": "babel build --plugins annotate-pure-calls --out-dir build --source-maps",
+    "clean": "rimraf build dist .tsbuildinfo",
+    "dtslint": "dtslint dtslint",
+    "check": "tsc -b tsconfig.json",
+    "test": "vitest",
+    "coverage": "vitest --coverage"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tim-smart/effect-stream.git"
+  },
+  "author": "Tim Smart <tim.smart@effectful.co>",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/tim-smart/effect-stream/issues"
+  },
+  "homepage": "https://github.com/tim-smart/effect-stream",
+  "devDependencies": {
+    "@babel/cli": "^7.24.1",
+    "@babel/core": "^7.24.3",
+    "@babel/plugin-transform-export-namespace-from": "^7.24.1",
+    "@babel/plugin-transform-modules-commonjs": "^7.24.1",
+    "@changesets/changelog-github": "^0.5.0",
+    "@changesets/cli": "^2.27.1",
+    "@edge-runtime/vm": "^3.2.0",
+    "@effect/build-utils": "^0.7.6",
+    "@effect/docgen": "^0.4.0",
+    "@effect/dtslint": "^0.1.0",
+    "@effect/eslint-plugin": "^0.1.2",
+    "@effect/language-service": "^0.1.0",
+    "@types/node": "^20.11.30",
+    "@typescript-eslint/eslint-plugin": "^7.4.0",
+    "@typescript-eslint/parser": "^7.4.0",
+    "@vitest/browser": "^1.4.0",
+    "@vitest/coverage-v8": "^1.4.0",
+    "@vitest/web-worker": "^1.4.0",
+    "babel-plugin-annotate-pure-calls": "^0.4.0",
+    "effect": "^2.4.15",
+    "eslint": "^8.57.0",
+    "eslint-import-resolver-typescript": "^3.6.1",
+    "eslint-plugin-codegen": "^0.28.0",
+    "eslint-plugin-deprecation": "^2.0.0",
+    "eslint-plugin-import": "^2.29.1",
+    "eslint-plugin-simple-import-sort": "^12.0.0",
+    "eslint-plugin-sort-destructure-keys": "^1.5.0",
+    "fast-check": "^3.17.0",
+    "glob": "^10.3.10",
+    "madge": "^6.1.0",
+    "prettier": "^3.2.5",
+    "rimraf": "^5.0.5",
+    "tsx": "^4.7.1",
+    "typescript": "^5.4.3",
+    "vite": "^5.2.6",
+    "vitest": "^1.4.0"
+  },
+  "tags": [],
+  "keywords": [],
+  "peerDependencies": {
+    "effect": "^2.4.15"
+  }
+}
