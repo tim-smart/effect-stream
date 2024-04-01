@@ -3,7 +3,7 @@ import * as Effect from "effect/Effect"
 import * as ExecutionStrategy from "effect/ExecutionStrategy"
 import * as Exit from "effect/Exit"
 import * as Scope from "effect/Scope"
-import type * as Ops from "./ops.js"
+import * as Ops from "./ops.js"
 
 const EOF = Symbol.for("effect/Channel/EOF")
 export const dieEOF = Effect.die(EOF)
@@ -33,7 +33,10 @@ export class Executor {
   input: Effect.Effect<unknown, unknown, unknown> = dieEOF
 
   evaluate(op: Ops.Operation): Effect.Effect<unknown, unknown, unknown> {
-    return this[op._op](op as any)
+    if (typeof op === "object" && op !== null && Ops.TypeId in op) {
+      return this[op._op](op as any)
+    }
+    throw new Error(`absurd: expected a Channel Operation, got ${op}`)
   }
 
   Read(op: Ops.Read): Effect.Effect<unknown, unknown, unknown> {
@@ -232,6 +235,11 @@ export class Executor {
     })
     return loop
   }
+  WithPull(op: Ops.WithPull): Effect.Effect<unknown, unknown, unknown> {
+    const semaphore = Effect.unsafeMakeSemaphore(1)
+    const upstreamEffect = semaphore.withPermits(1)(this.evaluate(op.upstream))
+    return this.evaluate(op.withPull(upstreamEffect))
+  }
   OnFailure(op: Ops.OnFailure): Effect.Effect<unknown, unknown, unknown> {
     const upstreamEffect = this.evaluate(op.upstream)
     let downstreamEffect: Effect.Effect<unknown, unknown, unknown> | undefined
@@ -338,6 +346,18 @@ export class Executor {
       )
     })
   }
+  Unwrap(op: Ops.Unwrap): Effect.Effect<unknown, unknown, unknown> {
+    let currentEffect: Effect.Effect<unknown, unknown, unknown> | undefined
+    return Effect.suspend(() => {
+      if (currentEffect !== undefined) {
+        return currentEffect
+      }
+      return Effect.flatMap(Scope.extend(op.effect, this.scope), (op) => {
+        currentEffect = this.evaluate(op)
+        return currentEffect
+      })
+    })
+  }
   PipeTo(op: Ops.PipeTo): Effect.Effect<unknown, unknown, unknown> {
     let downstreamEffect: Effect.Effect<unknown, unknown, unknown> | undefined
     return Effect.suspend(() => {
@@ -393,6 +413,7 @@ export class Executor {
     )
   }
 
+  _pullEffect: Effect.Effect<unknown, unknown, unknown> | undefined
   toPull(): Effect.Effect<unknown, unknown, unknown> {
     return this.evaluate(this.seed)
   }

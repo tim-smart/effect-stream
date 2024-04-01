@@ -7,6 +7,7 @@ import type { LazyArg } from "effect/Function"
 import { dual } from "effect/Function"
 import * as Option from "effect/Option"
 import { type Pipeable, pipeArguments } from "effect/Pipeable"
+import * as Predicate from "effect/Predicate"
 import * as Queue from "effect/Queue"
 import * as Channel from "./Channel.js"
 
@@ -23,6 +24,12 @@ export const TypeId = Symbol.for("effect/Stream")
  * @category type ids
  */
 export type TypeId = typeof TypeId
+
+/**
+ * @since 1.0.0
+ * @category refinements
+ */
+export const isStream = (u: unknown): u is Stream<unknown, unknown, unknown> => Predicate.hasProperty(u, TypeId)
 
 /**
  * @since 1.0.0
@@ -198,6 +205,41 @@ export const mapEffect: {
     self: Stream<A, E, R>,
     f: (o: NoInfer<A>) => Effect.Effect<B, E2, R2>
   ): Stream<B, E | E2, R | R2> => fromChannel(Channel.mapChunkEffect(self.channel, f))
+)
+
+/**
+ * @since 1.0.0
+ * @category mapping
+ */
+export const mapEffectPar: {
+  <A, B, E2, R2>(
+    f: (o: NoInfer<A>) => Effect.Effect<B, E2, R2>,
+    options?: {
+      readonly concurrency?: "unbounded" | number | undefined
+    }
+  ): <E, R>(self: Stream<A, E, R>) => Stream<B, E | E2, R | R2>
+  <A, E, R, B, E2, R2>(
+    self: Stream<A, E, R>,
+    f: (o: NoInfer<A>) => Effect.Effect<B, E2, R2>,
+    options?: {
+      readonly concurrency?: "unbounded" | number | undefined
+    }
+  ): Stream<B, E | E2, R | R2>
+} = dual(
+  (args) => isStream(args[0]),
+  <A, E, R, B, E2, R2>(
+    self: Stream<A, E, R>,
+    f: (o: NoInfer<A>) => Effect.Effect<B, E2, R2>,
+    options?: {
+      readonly concurrency?: "unbounded" | number | undefined
+    }
+  ): Stream<B, E | E2, R | R2> =>
+    fromChannel(
+      Channel.flatMap(self.channel, Channel.fromArray).pipe(
+        Channel.mapEffectPar(f, options),
+        Channel.map((b) => [b])
+      )
+    )
 )
 
 /**

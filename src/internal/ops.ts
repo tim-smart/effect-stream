@@ -34,6 +34,8 @@ export type Operation =
   | OnSuccess
   | OnSuccessEffect
   | OnSuccessChunkEffect
+  | WithPull
+  | Unwrap
   | OnFailure
   | OnFailureEffect
   | OnSuccessOrFailure
@@ -629,6 +631,25 @@ export class OnSuccessOrFailure extends BaseTransform("OnSuccessOrFailure") {
     upstream: Operation,
     readonly onSuccess: (a: any) => Operation,
     readonly onFailure: (a: any) => Operation
+  ) {
+    super(upstream)
+  }
+}
+
+/** @internal */
+export class Unwrap extends Base("Unwrap") {
+  constructor(
+    readonly effect: Effect.Effect<Operation, unknown, unknown>
+  ) {
+    super()
+  }
+}
+
+/** @internal */
+export class WithPull extends BaseTransform("WithPull") {
+  constructor(
+    upstream: Operation,
+    readonly withPull: (pull: Effect.Effect<unknown, unknown, unknown>) => Operation
   ) {
     super(upstream)
   }

@@ -2,14 +2,16 @@
  * @since 1.0.0
  */
 import * as Cause from "effect/Cause"
+import * as Deferred from "effect/Deferred"
 import * as Effect from "effect/Effect"
 import type * as Exit from "effect/Exit"
 import type { LazyArg } from "effect/Function"
 import { dual, identity } from "effect/Function"
 import * as Option from "effect/Option"
 import type { Pipeable } from "effect/Pipeable"
+import * as Predicate from "effect/Predicate"
 import * as Queue from "effect/Queue"
-import * as Scope from "effect/Scope"
+import type * as Scope from "effect/Scope"
 import type * as Types from "effect/Types"
 import { dieEOF, Executor, isEOFCause, rescueEOF } from "./internal/executor.js"
 import * as Ops from "./internal/ops.js"
@@ -61,6 +63,13 @@ export declare namespace Channel {
     readonly onDone: () => Effect.Effect<void, never, RD>
   }
 }
+
+/**
+ * @since 1.0.0
+ * @category refinements
+ */
+export const isChannel = (u: unknown): u is Channel<unknown, unknown, unknown, unknown, unknown> =>
+  Predicate.hasProperty(u, Ops.TypeId)
 
 /**
  * @since 1.0.0
@@ -376,22 +385,96 @@ export const tap: {
  * @since 1.0.0
  * @category mapping
  */
+export const withPull: {
+  <O, E, R, O2, I2, E2, IE2, R2>(
+    f: (pull: Effect.Effect<O, E, R>) => Channel<O2, I2, E2, IE2, R2>
+  ): <I, IE>(
+    self: Channel<O, I, E, IE, R>
+  ) => Channel<O2, I, E2, IE, R | R2>
+  <O, I, E, IE, R, O2, I2, E2, IE2, R2>(
+    self: Channel<O, I, E, IE, R>,
+    f: (pull: Effect.Effect<O, E, R>) => Channel<O2, I2, E2, IE2, R2>
+  ): Channel<O2, I, E2, IE, R | R2>
+} = dual(
+  2,
+  <O, I, E, IE, R, O2, I2, E2, IE2, R2>(
+    self: Channel<O, I, E, IE, R>,
+    f: (pull: Effect.Effect<O, E, R>) => Channel<O2, I2, E2, IE2, R2>
+  ): Channel<O2, I, E2, IE, R | R2> => new Ops.WithPull(self as any, f as any).fused() as any
+)
+
+/**
+ * @since 1.0.0
+ * @category mapping
+ */
 export const mapEffectPar: {
   <O, O2, E2, R2>(
-    f: (o: NoInfer<O>) => Effect.Effect<O2, E2, R2>
+    f: (o: NoInfer<O>) => Effect.Effect<O2, E2, R2>,
+    options?: {
+      readonly concurrency?: "unbounded" | number | undefined
+    }
   ): <I, E, IE, R>(
     self: Channel<O, I, E, IE, R>
   ) => Channel<O2, I, E | E2, IE, R | R2>
   <O, I, E, IE, R, O2, E2, R2>(
     self: Channel<O, I, E, IE, R>,
-    f: (o: NoInfer<O>) => Effect.Effect<O2, E2, R2>
+    f: (o: NoInfer<O>) => Effect.Effect<O2, E2, R2>,
+    options?: {
+      readonly concurrency?: "unbounded" | number | undefined
+    }
   ): Channel<O2, I, E | E2, IE, R | R2>
 } = dual(
-  2,
+  (args) => isChannel(args[0]),
   <O, I, E, IE, R, O2, E2, R2>(
     self: Channel<O, I, E, IE, R>,
-    f: (o: NoInfer<O>) => Effect.Effect<O2, E2, R2>
-  ): Channel<O2, I, E | E2, IE, R | R2> => new Ops.OnSuccessEffect(self as any, f).fused() as any
+    f: (o: NoInfer<O>) => Effect.Effect<O2, E2, R2>,
+    options?: {
+      readonly concurrency?: "unbounded" | number | undefined
+    }
+  ): Channel<O2, I, E | E2, IE, R | R2> => {
+    const EOF = Symbol.for("effect/Channel/mapEffectPar/EOF")
+    return withPull(self, (pull) =>
+      Effect.Do.pipe(
+        Effect.bind("buffer", () => Queue.unbounded<O2 | typeof EOF>()),
+        Effect.bind("deferred", () => Deferred.make<never, E | E2>()),
+        Effect.tap(({ buffer, deferred }) => {
+          const semaphore = Effect.unsafeMakeSemaphore(
+            typeof options?.concurrency === "number" ? options.concurrency : 1
+          )
+          const isBounded = typeof options?.concurrency === "number"
+          return pull.pipe(
+            isBounded ? Effect.zipLeft(semaphore.take(1)) : identity,
+            Effect.matchCauseEffect({
+              onFailure: (cause) => Deferred.failCause(deferred, cause),
+              onSuccess: (o) =>
+                Effect.fork(Effect.matchCauseEffect(f(o), {
+                  onFailure: (cause) => Deferred.failCause(deferred, cause),
+                  onSuccess: (o2): Effect.Effect<void> =>
+                    isBounded
+                      ? Effect.zipRight(Queue.offer(buffer, o2), semaphore.release(1))
+                      : Queue.offer(buffer, o2)
+                }))
+            }),
+            Effect.forever,
+            Effect.raceFirst(Deferred.await(deferred)),
+            Effect.ensuring(Queue.offer(buffer, EOF)),
+            Effect.forkScoped,
+            Effect.interruptible
+          )
+        }),
+        Effect.map(({ buffer, deferred }) =>
+          repeatEffect(
+            Effect.flatMap(
+              Queue.take(buffer),
+              (o2) => o2 === EOF ? Deferred.await(deferred) : Effect.succeed(o2)
+            )
+          )
+        ),
+        unwrap as <O, I, E, IE, R, E2, R2>(
+          effect: Effect.Effect<Channel<O, I, E, IE, R>, E2, R2>
+        ) => Channel<O, I, E | E2, IE, R | R2>
+      ))
+  }
 )
 
 /**
@@ -559,35 +642,13 @@ export const flatMap: {
 export const flatten = <O, I, E, IE, R, I2, E2, IE2, R2>(
   self: Channel<Channel<O, I2, E2, IE2, R2>, I, E, IE, R>
 ): Channel<O, I, E | E2, IE, R | R2> => flatMap(self, identity)
-
 /**
  * @since 1.0.0
  * @category mapping
  */
 export const unwrap = <O, I, E, IE, R, E2, R2>(
   effect: Effect.Effect<Channel<O, I, E, IE, R>, E2, R2>
-): Channel<O, I, E | E2, IE, R | R2> => flatten(fromEffect(effect))
-
-/**
- * @since 1.0.0
- * @category mapping
- */
-export const unwrapScoped = <O, I, E, IE, R, E2, R2>(
-  effect: Effect.Effect<Channel<O, I, E, IE, R>, E2, R2>
-): Channel<O, I, E | E2, IE, R | Exclude<R2, Scope.Scope>> =>
-  unwrap(
-    Effect.flatMap(Scope.make(), (scope) =>
-      Effect.uninterruptibleMask((restore) =>
-        Scope.extend(
-          Effect.map(effect, (channel) =>
-            ensuring(
-              channel,
-              (exit) => restore(Scope.close(scope, exit))
-            )),
-          scope
-        )
-      ))
-  )
+): Channel<O, I, E | E2, IE, R | Exclude<R2, Scope.Scope>> => new Ops.Unwrap(effect as any) as any
 
 /**
  * @since 1.0.0
@@ -709,12 +770,23 @@ export const embedInput: {
   ): Channel<O2, I2, E, IE2, R | R2 | R3 | R4> => new Ops.EmbedInput(input, self as any) as any
 )
 
-const makePull = <O, I, E, IE, R>(
+const makeUnsafePull = <O, I, E, IE, R>(
   self: Channel<O, I, E, IE, R>
 ): Effect.Effect<Effect.Effect<O, E, R>, never, Scope.Scope> =>
   Effect.map(
     Effect.scope,
     (scope) => new Executor(self as any, scope).toPull() as any
+  )
+
+const makePull = <O, I, E, IE, R>(
+  self: Channel<O, I, E, IE, R>
+): Effect.Effect<Effect.Effect<O, E, R>, never, Scope.Scope> =>
+  Effect.map(
+    makeUnsafePull(self),
+    (pull) => {
+      const semaphore = Effect.unsafeMakeSemaphore(1)
+      return semaphore.withPermits(1)(pull)
+    }
   )
 
 /**
@@ -729,7 +801,10 @@ export const toPull = <O, I, E, IE, R>(
     (pull) =>
       Effect.catchAllCause(
         pull,
-        (cause) => isEOFCause(cause) ? Effect.fail(Option.none()) : Effect.failCause(Cause.map(cause, Option.some))
+        (cause) =>
+          isEOFCause(cause)
+            ? Effect.fail(Option.none())
+            : Effect.failCause(Cause.map(cause, Option.some))
       )
   )
 
@@ -754,7 +829,7 @@ export const runForEach: {
     f: (o: O) => Effect.Effect<void, E2, R2>
   ): Effect.Effect<void, E | E2, R | R2> =>
     Effect.scoped(
-      Effect.flatMap(makePull(self), (pull) =>
+      Effect.flatMap(makeUnsafePull(self), (pull) =>
         Effect.catchAllCause(
           Effect.forever(Effect.flatMap(pull, f)),
           rescueEOF
@@ -785,5 +860,5 @@ export const runDrain = <O, I, E, IE, R>(
   self: Channel<O, I, E, IE, R>
 ): Effect.Effect<void, E, R> =>
   Effect.scoped(
-    Effect.flatMap(makePull(self), (pull) => Effect.catchAllCause(Effect.forever(pull), rescueEOF))
+    Effect.flatMap(makeUnsafePull(self), (pull) => Effect.catchAllCause(Effect.forever(pull), rescueEOF))
   )
