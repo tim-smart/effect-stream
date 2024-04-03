@@ -663,21 +663,6 @@ export class Take extends BaseTransform("Take") {
   ) {
     super(upstream)
   }
-
-  optimize(downstream: TransformOp): Operation {
-    switch (downstream._op) {
-      case "Take": {
-        const predicate = this.predicate
-        return new Take(
-          this.upstream,
-          (value, i) => predicate(value, i) && downstream.predicate(value, i)
-        )
-      }
-      default: {
-        return downstream
-      }
-    }
-  }
 }
 
 /** @internal */
