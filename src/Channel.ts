@@ -6,7 +6,7 @@ import * as Deferred from "effect/Deferred"
 import * as Effect from "effect/Effect"
 import type * as Exit from "effect/Exit"
 import type { LazyArg } from "effect/Function"
-import { dual, identity } from "effect/Function"
+import { dual, identity as fnIdentity } from "effect/Function"
 import * as Option from "effect/Option"
 import type { Pipeable } from "effect/Pipeable"
 import * as Predicate from "effect/Predicate"
@@ -73,34 +73,33 @@ export const isChannel = (u: unknown): u is Channel<unknown, unknown, unknown, u
 
 /**
  * @since 1.0.0
+ * @category refinements
+ */
+export const concurrencyIsSequential = (concurrency: undefined | number | "unbounded"): boolean =>
+  concurrency === undefined || (typeof concurrency === "number" && concurrency <= 1)
+
+/**
+ * @since 1.0.0
  * @category constructors
  */
-export const read = <
-  In,
-  Out1,
-  _In1,
-  Err1,
-  _InErr1,
-  R1,
-  InErr,
-  Out2,
-  _In2,
-  Err2,
-  _InErr2,
-  R2,
-  Out3,
-  _In3,
-  Err3,
-  _InErr3,
-  R3
+export const withInputPull = <
+  I,
+  IE,
+  IR,
+  O,
+  _I,
+  E,
+  _IE,
+  R
 >(
-  onInput: (input: In) => Channel<Out1, _In1, Err1, _InErr1, R1>,
-  onFailure: (
-    cause: Cause.Cause<InErr>
-  ) => Channel<Out2, _In2, Err2, _InErr2, R2>,
-  onDone: () => Channel<Out3, _In3, Err3, _InErr3, R3>
-): Channel<Out1 | Out2 | Out3, In, Err1 | Err2 | Err3, InErr, R1 | R2 | R3> =>
-  new Ops.Read(onInput as any, onFailure as any, onDone as any) as any
+  f: (pull: Effect.Effect<I, IE, IR>) => Channel<O, _I, E, _IE, R>
+): Channel<O, I, E, IE, R | IR> => new Ops.WithInputPull(f as any) as any
+
+/**
+ * @since 1.0.0
+ * @category constructors
+ */
+export const identity = <O, E>(): Channel<O, O, E, E> => withInputPull(repeatEffect)
 
 /**
  * @since 1.0.0
@@ -343,20 +342,34 @@ export const map: {
  */
 export const mapEffect: {
   <O, O2, E2, R2>(
-    f: (o: NoInfer<O>) => Effect.Effect<O2, E2, R2>
+    f: (o: NoInfer<O>) => Effect.Effect<O2, E2, R2>,
+    options?: {
+      readonly concurrency?: "unbounded" | number | undefined
+    }
   ): <I, E, IE, R>(
     self: Channel<O, I, E, IE, R>
   ) => Channel<O2, I, E | E2, IE, R | R2>
   <O, I, E, IE, R, O2, E2, R2>(
     self: Channel<O, I, E, IE, R>,
-    f: (o: NoInfer<O>) => Effect.Effect<O2, E2, R2>
+    f: (o: NoInfer<O>) => Effect.Effect<O2, E2, R2>,
+    options?: {
+      readonly concurrency?: "unbounded" | number | undefined
+    }
   ): Channel<O2, I, E | E2, IE, R | R2>
 } = dual(
-  2,
+  (args) => isChannel(args[0]),
   <O, I, E, IE, R, O2, E2, R2>(
     self: Channel<O, I, E, IE, R>,
-    f: (o: NoInfer<O>) => Effect.Effect<O2, E2, R2>
-  ): Channel<O2, I, E | E2, IE, R | R2> => new Ops.OnSuccessEffect(self as any, f).fused() as any
+    f: (o: NoInfer<O>) => Effect.Effect<O2, E2, R2>,
+    options?: {
+      readonly concurrency?: "unbounded" | number | undefined
+    }
+  ): Channel<O2, I, E | E2, IE, R | R2> => {
+    if (concurrencyIsSequential(options?.concurrency)) {
+      return new Ops.OnSuccessEffect(self as any, f).fused() as any
+    }
+    return mapEffectPar(self, f, options)
+  }
 )
 
 /**
@@ -403,79 +416,55 @@ export const withPull: {
   ): Channel<O2, I, E2, IE, R | R2> => new Ops.WithPull(self as any, f as any).fused() as any
 )
 
-/**
- * @since 1.0.0
- * @category mapping
- */
-export const mapEffectPar: {
-  <O, O2, E2, R2>(
-    f: (o: NoInfer<O>) => Effect.Effect<O2, E2, R2>,
-    options?: {
-      readonly concurrency?: "unbounded" | number | undefined
-    }
-  ): <I, E, IE, R>(
-    self: Channel<O, I, E, IE, R>
-  ) => Channel<O2, I, E | E2, IE, R | R2>
-  <O, I, E, IE, R, O2, E2, R2>(
-    self: Channel<O, I, E, IE, R>,
-    f: (o: NoInfer<O>) => Effect.Effect<O2, E2, R2>,
-    options?: {
-      readonly concurrency?: "unbounded" | number | undefined
-    }
-  ): Channel<O2, I, E | E2, IE, R | R2>
-} = dual(
-  (args) => isChannel(args[0]),
-  <O, I, E, IE, R, O2, E2, R2>(
-    self: Channel<O, I, E, IE, R>,
-    f: (o: NoInfer<O>) => Effect.Effect<O2, E2, R2>,
-    options?: {
-      readonly concurrency?: "unbounded" | number | undefined
-    }
-  ): Channel<O2, I, E | E2, IE, R | R2> => {
-    const EOF = Symbol.for("effect/Channel/mapEffectPar/EOF")
-    return withPull(self, (pull) =>
-      Effect.Do.pipe(
-        Effect.bind("buffer", () => Queue.unbounded<O2 | typeof EOF>()),
-        Effect.bind("deferred", () => Deferred.make<never, E | E2>()),
-        Effect.tap(({ buffer, deferred }) => {
-          const semaphore = Effect.unsafeMakeSemaphore(
-            typeof options?.concurrency === "number" ? options.concurrency : 1
-          )
-          const isBounded = typeof options?.concurrency === "number"
-          return pull.pipe(
-            isBounded ? Effect.zipLeft(semaphore.take(1)) : identity,
-            Effect.matchCauseEffect({
-              onFailure: (cause) => Deferred.failCause(deferred, cause),
-              onSuccess: (o) =>
-                Effect.fork(Effect.matchCauseEffect(f(o), {
-                  onFailure: (cause) => Deferred.failCause(deferred, cause),
-                  onSuccess: (o2): Effect.Effect<void> =>
-                    isBounded
-                      ? Effect.zipRight(Queue.offer(buffer, o2), semaphore.release(1))
-                      : Queue.offer(buffer, o2)
-                }))
-            }),
-            Effect.forever,
-            Effect.raceFirst(Deferred.await(deferred)),
-            Effect.ensuring(Queue.offer(buffer, EOF)),
-            Effect.forkScoped,
-            Effect.interruptible
-          )
-        }),
-        Effect.map(({ buffer, deferred }) =>
-          repeatEffect(
-            Effect.flatMap(
-              Queue.take(buffer),
-              (o2) => o2 === EOF ? Deferred.await(deferred) : Effect.succeed(o2)
-            )
-          )
-        ),
-        unwrap as <O, I, E, IE, R, E2, R2>(
-          effect: Effect.Effect<Channel<O, I, E, IE, R>, E2, R2>
-        ) => Channel<O, I, E | E2, IE, R | R2>
-      ))
+const mapEffectPar = <O, I, E, IE, R, O2, E2, R2>(
+  self: Channel<O, I, E, IE, R>,
+  f: (o: NoInfer<O>) => Effect.Effect<O2, E2, R2>,
+  options?: {
+    readonly concurrency?: "unbounded" | number | undefined
   }
-)
+): Channel<O2, I, E | E2, IE, R | R2> => {
+  const EOF = Symbol.for("effect/Channel/mapEffectPar/EOF")
+  return withPull(self, (pull) =>
+    Effect.Do.pipe(
+      Effect.bind("buffer", () => Queue.unbounded<O2 | typeof EOF>()),
+      Effect.bind("deferred", () => Deferred.make<never, E | E2>()),
+      Effect.tap(({ buffer, deferred }) => {
+        const semaphore = typeof options?.concurrency === "number" ?
+          Effect.unsafeMakeSemaphore(options.concurrency) :
+          undefined
+        return pull.pipe(
+          semaphore ? Effect.zipLeft(semaphore.take(1)) : fnIdentity,
+          Effect.matchCauseEffect({
+            onFailure: (cause) => Deferred.failCause(deferred, cause),
+            onSuccess: (o) =>
+              Effect.fork(Effect.matchCauseEffect(f(o), {
+                onFailure: (cause) => Deferred.failCause(deferred, cause),
+                onSuccess: (o2): Effect.Effect<void> =>
+                  semaphore
+                    ? Effect.zipRight(Queue.offer(buffer, o2), semaphore.release(1))
+                    : Queue.offer(buffer, o2)
+              }))
+          }),
+          Effect.forever,
+          Effect.raceFirst(Deferred.await(deferred)),
+          Effect.ensuring(Queue.offer(buffer, EOF)),
+          Effect.forkScoped,
+          Effect.interruptible
+        )
+      }),
+      Effect.map(({ buffer, deferred }) =>
+        repeatEffect(
+          Effect.flatMap(
+            Queue.take(buffer),
+            (o2) => o2 === EOF ? Deferred.await(deferred) : Effect.succeed(o2)
+          )
+        )
+      ),
+      unwrap as <O, I, E, IE, R, E2, R2>(
+        effect: Effect.Effect<Channel<O, I, E, IE, R>, E2, R2>
+      ) => Channel<O, I, E | E2, IE, R | R2>
+    ))
+}
 
 /**
  * @since 1.0.0
@@ -497,6 +486,29 @@ export const mapChunkEffect: {
     self: Channel<Array<O>, I, E, IE, R>,
     f: (o: NoInfer<O>) => Effect.Effect<O2, E2, R2>
   ): Channel<Array<O2>, I, E | E2, IE, R | R2> => new Ops.OnSuccessChunkEffect(self as any, f).fused() as any
+)
+
+/**
+ * @since 1.0.0
+ * @category mapping
+ */
+export const scan: {
+  <Z, O, OB>(
+    initial: Z,
+    f: (acc: Z, o: NoInfer<O>) => readonly [Z, OB]
+  ): <I, E, IE, R>(self: Channel<O, I, E, IE, R>) => Channel<OB, I, E, IE, R>
+  <O, I, E, IE, R, Z, OB>(
+    self: Channel<O, I, E, IE, R>,
+    initial: Z,
+    f: (acc: Z, o: NoInfer<O>) => readonly [Z, OB]
+  ): Channel<OB, I, E, IE, R>
+} = dual(
+  3,
+  <O, I, E, IE, R, Z, OB>(
+    self: Channel<O, I, E, IE, R>,
+    initial: Z,
+    f: (acc: Z, o: NoInfer<O>) => readonly [Z, OB]
+  ): Channel<OB, I, E, IE, R> => new Ops.Scan(self as any, initial, f).fused() as any
 )
 
 /**
@@ -641,7 +653,7 @@ export const flatMap: {
  */
 export const flatten = <O, I, E, IE, R, I2, E2, IE2, R2>(
   self: Channel<Channel<O, I2, E2, IE2, R2>, I, E, IE, R>
-): Channel<O, I, E | E2, IE, R | R2> => flatMap(self, identity)
+): Channel<O, I, E | E2, IE, R | R2> => flatMap(self, fnIdentity)
 /**
  * @since 1.0.0
  * @category mapping

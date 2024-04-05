@@ -3,13 +3,13 @@ import * as Channel from "./Channel.js"
 import * as Stream2 from "./Stream.js"
 
 const poc = Channel.range(1, 100000).pipe(
-  Channel.mapEffectPar(Effect.succeed, { concurrency: 50 }),
+  Channel.mapEffect(Effect.succeed, { concurrency: 50 }),
   Channel.runDrain,
   Effect.zipRight(Effect.log("done")),
   Effect.withLogSpan("new channel")
 )
 const pocStream = Stream2.range(1, 100000).pipe(
-  Stream2.mapEffectPar(Effect.succeed, { concurrency: 50 }),
+  Stream2.mapEffect(Effect.succeed, { concurrency: 50 }),
   Stream2.runCollect,
   Effect.zipRight(Effect.log("done")),
   Effect.withLogSpan("new")

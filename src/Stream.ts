@@ -193,26 +193,6 @@ export const map: {
  */
 export const mapEffect: {
   <A, B, E2, R2>(
-    f: (o: NoInfer<A>) => Effect.Effect<B, E2, R2>
-  ): <E, R>(self: Stream<A, E, R>) => Stream<B, E | E2, R | R2>
-  <A, E, R, B, E2, R2>(
-    self: Stream<A, E, R>,
-    f: (o: NoInfer<A>) => Effect.Effect<B, E2, R2>
-  ): Stream<B, E | E2, R | R2>
-} = dual(
-  2,
-  <A, E, R, B, E2, R2>(
-    self: Stream<A, E, R>,
-    f: (o: NoInfer<A>) => Effect.Effect<B, E2, R2>
-  ): Stream<B, E | E2, R | R2> => fromChannel(Channel.mapChunkEffect(self.channel, f))
-)
-
-/**
- * @since 1.0.0
- * @category mapping
- */
-export const mapEffectPar: {
-  <A, B, E2, R2>(
     f: (o: NoInfer<A>) => Effect.Effect<B, E2, R2>,
     options?: {
       readonly concurrency?: "unbounded" | number | undefined
@@ -234,13 +214,24 @@ export const mapEffectPar: {
       readonly concurrency?: "unbounded" | number | undefined
     }
   ): Stream<B, E | E2, R | R2> =>
-    fromChannel(
-      Channel.flatMap(self.channel, Channel.fromArray).pipe(
-        Channel.mapEffectPar(f, options),
-        Channel.map((b) => [b])
-      )
-    )
+    Channel.concurrencyIsSequential(options?.concurrency) ?
+      fromChannel(Channel.mapChunkEffect(self.channel, f)) :
+      mapEffectPar(self, f, options)
 )
+
+const mapEffectPar = <A, E, R, B, E2, R2>(
+  self: Stream<A, E, R>,
+  f: (o: NoInfer<A>) => Effect.Effect<B, E2, R2>,
+  options?: {
+    readonly concurrency?: "unbounded" | number | undefined
+  }
+): Stream<B, E | E2, R | R2> =>
+  fromChannel(
+    Channel.flatMap(self.channel, Channel.fromArray).pipe(
+      Channel.mapEffect(f, options),
+      Channel.map((b) => [b])
+    )
+  )
 
 /**
  * @since 1.0.0

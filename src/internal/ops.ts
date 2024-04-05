@@ -14,7 +14,6 @@ export type TypeId = typeof TypeId
 
 /** @internal */
 export type Operation =
-  | Read
   | Empty
   | Never
   | Success
@@ -29,11 +28,13 @@ export type Operation =
   | Map
   | Filter
   | FilterMap
+  | Scan
   | Take
   | Drop
   | OnSuccess
   | OnSuccessEffect
   | OnSuccessChunkEffect
+  | WithInputPull
   | WithPull
   | Unwrap
   | OnFailure
@@ -106,17 +107,6 @@ function BaseTransform<Op extends string>(
 
 const EOF = Symbol.for("effect/Channel/EOF")
 const dieEmpty = Effect.die(EOF)
-
-/** @internal */
-export class Read extends Base("Read") {
-  constructor(
-    readonly onInput: (input: unknown) => Operation,
-    readonly onFailure: (cause: Cause.Cause<unknown>) => Operation,
-    readonly onDone: () => Operation
-  ) {
-    super()
-  }
-}
 
 /** @internal */
 export class Empty extends Base("Empty") {
@@ -526,6 +516,32 @@ export class FilterMap extends BaseTransform("FilterMap") {
 }
 
 /** @internal */
+export class Scan extends BaseTransform("Scan") {
+  constructor(
+    upstream: Operation,
+    readonly initial: any,
+    readonly reducer: (acc: any, a: any) => readonly [acc: any, a: any]
+  ) {
+    super(upstream)
+  }
+
+  optimize(downstream: TransformOp): Operation {
+    switch (downstream._op) {
+      case "Map": {
+        const reduce = this.reducer
+        return new Scan(this.upstream, this.initial, (acc, a) => {
+          const [newAcc, b] = reduce(acc, a)
+          return [newAcc, downstream.transform(b)]
+        })
+      }
+      default: {
+        return downstream
+      }
+    }
+  }
+}
+
+/** @internal */
 export class OnSuccess extends BaseTransform("OnSuccess") {
   constructor(
     upstream: Operation,
@@ -640,6 +656,15 @@ export class OnSuccessOrFailure extends BaseTransform("OnSuccessOrFailure") {
 export class Unwrap extends Base("Unwrap") {
   constructor(
     readonly effect: Effect.Effect<Operation, unknown, unknown>
+  ) {
+    super()
+  }
+}
+
+/** @internal */
+export class WithInputPull extends Base("WithInputPull") {
+  constructor(
+    readonly withInput: (pull: Effect.Effect<unknown, unknown, unknown>) => Operation
   ) {
     super()
   }

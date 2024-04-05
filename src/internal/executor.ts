@@ -39,23 +39,8 @@ export class Executor {
     throw new Error(`absurd: expected a Channel Operation, got ${op}`)
   }
 
-  Read(op: Ops.Read): Effect.Effect<unknown, unknown, unknown> {
-    let currentEffect: Effect.Effect<unknown, unknown, unknown> | undefined
-    return Effect.suspend(() => {
-      if (currentEffect !== undefined) {
-        return currentEffect
-      }
-      return Effect.matchCauseEffect(this.input, {
-        onSuccess: (a) => {
-          currentEffect = this.evaluate(op.onInput(a))
-          return currentEffect
-        },
-        onFailure: (cause) => {
-          currentEffect = this.evaluate(isEOFCause(cause) ? op.onDone() : op.onFailure(cause))
-          return currentEffect
-        }
-      })
-    })
+  WithInputPull(op: Ops.WithInputPull): Effect.Effect<unknown, unknown, unknown> {
+    return this.evaluate(op.withInput(this.input))
   }
   Empty(_op: Ops.Empty): Effect.Effect<unknown, unknown, unknown> {
     return dieEOF
@@ -159,6 +144,15 @@ export class Executor {
       }
     )
     return loop
+  }
+  Scan(op: Ops.Scan): Effect.Effect<unknown, unknown, unknown> {
+    const upstreamEffect = this.evaluate(op.upstream)
+    let acc = op.initial
+    return Effect.map(upstreamEffect, (value) => {
+      const result = op.reducer(acc, value)
+      acc = result[0]
+      return result[1]
+    })
   }
   Take(op: Ops.Take): Effect.Effect<unknown, unknown, unknown> {
     const upstreamEffect = this.evaluate(op.upstream)
