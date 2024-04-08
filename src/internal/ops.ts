@@ -30,6 +30,7 @@ export type Operation =
   | FilterMap
   | Scan
   | Take
+  | TakeN
   | Drop
   | OnSuccess
   | OnSuccessEffect
@@ -687,6 +688,27 @@ export class Take extends BaseTransform("Take") {
     readonly predicate: (value: any, i: number) => boolean
   ) {
     super(upstream)
+  }
+}
+
+/** @internal */
+export class TakeN extends BaseTransform("TakeN") {
+  constructor(
+    upstream: Operation,
+    readonly count: number
+  ) {
+    super(upstream)
+  }
+
+  optimize(downstream: TransformOp): Operation {
+    switch (downstream._op) {
+      case "TakeN": {
+        return new TakeN(this.upstream, this.count + downstream.count)
+      }
+      default: {
+        return downstream
+      }
+    }
   }
 }
 

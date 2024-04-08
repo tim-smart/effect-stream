@@ -424,25 +424,22 @@ const mapEffectPar = <O, I, E, IE, R, O2, E2, R2>(
   }
 ): Channel<O2, I, E | E2, IE, R | R2> => {
   const EOF = Symbol.for("effect/Channel/mapEffectPar/EOF")
-  return withPull(self, (pull) =>
-    Effect.Do.pipe(
+  return withPull(self, (pull) => {
+    const semaphore = typeof options?.concurrency === "number" ?
+      Effect.unsafeMakeSemaphore(options.concurrency) :
+      undefined
+    return Effect.Do.pipe(
       Effect.bind("buffer", () => Queue.unbounded<O2 | typeof EOF>()),
       Effect.bind("deferred", () => Deferred.make<never, E | E2>()),
-      Effect.tap(({ buffer, deferred }) => {
-        const semaphore = typeof options?.concurrency === "number" ?
-          Effect.unsafeMakeSemaphore(options.concurrency) :
-          undefined
-        return pull.pipe(
+      Effect.tap(({ buffer, deferred }) =>
+        pull.pipe(
           semaphore ? Effect.zipLeft(semaphore.take(1)) : fnIdentity,
           Effect.matchCauseEffect({
             onFailure: (cause) => Deferred.failCause(deferred, cause),
             onSuccess: (o) =>
               Effect.fork(Effect.matchCauseEffect(f(o), {
                 onFailure: (cause) => Deferred.failCause(deferred, cause),
-                onSuccess: (o2): Effect.Effect<void> =>
-                  semaphore
-                    ? Effect.zipRight(Queue.offer(buffer, o2), semaphore.release(1))
-                    : Queue.offer(buffer, o2)
+                onSuccess: (o2): Effect.Effect<void> => Queue.offer(buffer, o2)
               }))
           }),
           Effect.forever,
@@ -451,11 +448,15 @@ const mapEffectPar = <O, I, E, IE, R, O2, E2, R2>(
           Effect.forkScoped,
           Effect.interruptible
         )
-      }),
+      ),
       Effect.map(({ buffer, deferred }) =>
         repeatEffect(
           Effect.flatMap(
-            Queue.take(buffer),
+            semaphore
+              ? Effect.uninterruptibleMask((restore) =>
+                Effect.zipLeft(restore(Queue.take(buffer)), semaphore.release(1))
+              )
+              : Queue.take(buffer),
             (o2) => o2 === EOF ? Deferred.await(deferred) : Effect.succeed(o2)
           )
         )
@@ -463,7 +464,8 @@ const mapEffectPar = <O, I, E, IE, R, O2, E2, R2>(
       unwrap as <O, I, E, IE, R, E2, R2>(
         effect: Effect.Effect<Channel<O, I, E, IE, R>, E2, R2>
       ) => Channel<O, I, E | E2, IE, R | R2>
-    ))
+    )
+  })
 }
 
 /**
@@ -575,7 +577,7 @@ export const take: {
   <O, I, E, IE, R>(
     self: Channel<O, I, E, IE, R>,
     n: number
-  ): Channel<O, I, E, IE, R> => new Ops.Take(self as any, (_, i) => i < n).fused() as any
+  ): Channel<O, I, E, IE, R> => new Ops.TakeN(self as any, n).fused() as any
 )
 
 /**
@@ -752,6 +754,45 @@ export const pipeTo: {
     self: Channel<O, I, E, IE, R>,
     that: Channel<O2, I2, E2, IE2, R2>
   ): Channel<O2, I, E2, IE, R | R2> => new Ops.PipeTo(self as any, that as any).fused() as any
+)
+
+/**
+ * @since 1.0.0
+ * @category buffering
+ */
+export const buffer: {
+  (n: number): <O, I, E, IE, R>(self: Channel<O, I, E, IE, R>) => Channel<O, I, E, IE, R>
+  <O, I, E, IE, R>(self: Channel<O, I, E, IE, R>, n: number): Channel<O, I, E, IE, R>
+} = dual(
+  2,
+  <O, I, E, IE, R>(self: Channel<O, I, E, IE, R>, n: number): Channel<O, I, E, IE, R> => {
+    const EOF = Symbol.for("effect/Channel/buffer/EOF")
+    const capacity = Math.max(1, n)
+    return withPull(self, (pull) =>
+      Queue.bounded<O | typeof EOF>(capacity - 1).pipe(
+        Effect.bindTo("queue"),
+        Effect.bind("deferred", () => Deferred.make<never, E>()),
+        Effect.tap(({ deferred, queue }) =>
+          pull.pipe(
+            Effect.flatMap((o) => Queue.offer(queue, o)),
+            Effect.forever,
+            Effect.intoDeferred(deferred),
+            Effect.ensuring(Queue.offer(queue, EOF)),
+            Effect.forkScoped,
+            Effect.interruptible
+          )
+        ),
+        Effect.map(({ deferred, queue }) =>
+          repeatEffect(
+            Effect.flatMap(
+              Queue.take(queue),
+              (o) => o === EOF ? Deferred.await(deferred) : Effect.succeed(o)
+            )
+          )
+        ),
+        unwrap
+      ))
+  }
 )
 
 /**

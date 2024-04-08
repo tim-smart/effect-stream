@@ -162,6 +162,17 @@ export class Executor {
       return pass ? Effect.succeed(value) : dieEOF
     })
   }
+  TakeN(op: Ops.TakeN): Effect.Effect<unknown, unknown, unknown> {
+    const upstreamEffect = this.evaluate(op.upstream)
+    let i = 0
+    return Effect.suspend(() => {
+      if (i >= op.count) {
+        return dieEOF
+      }
+      i++
+      return upstreamEffect
+    })
+  }
   Drop(op: Ops.Drop): Effect.Effect<unknown, unknown, unknown> {
     const upstreamEffect = this.evaluate(op.upstream)
     let i = 0

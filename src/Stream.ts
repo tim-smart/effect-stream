@@ -140,9 +140,9 @@ export const range = (start: number, end?: number, chunkSize = DefaultChunkSize)
     ? Channel.suspend(() => {
       let i = start
       return Channel.repeatEffect(Effect.sync(() => {
-        const chunk: Array<number> = []
+        const chunk: Array<number> = new Array(chunkSize)
         for (let j = 0; j < chunkSize; j++) {
-          chunk.push(i++)
+          chunk[j] = i++
         }
         return chunk
       }))
@@ -152,13 +152,13 @@ export const range = (start: number, end?: number, chunkSize = DefaultChunkSize)
       let i = start
       return Channel.repeatEffectOption(
         Effect.suspend(() => {
-          const chunk: Array<number> = []
-          for (let j = 0; j < chunkSize; j++) {
-            const value = i++
-            if (value > actualEnd) {
-              return chunk.length === 0 ? Effect.fail(Option.none()) : Effect.succeed(chunk)
-            }
-            chunk.push(value)
+          if (i > actualEnd) {
+            return Effect.fail(Option.none())
+          }
+          const len = Math.min(chunkSize, actualEnd - i + 1)
+          const chunk: Array<number> = new Array(len)
+          for (let j = 0; j < len; j++) {
+            chunk[j] = i++
           }
           return Effect.succeed(chunk)
         })
