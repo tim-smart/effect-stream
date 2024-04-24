@@ -1,4 +1,5 @@
-import type * as Cause from "effect/Cause"
+import * as Cause from "effect/Cause"
+import * as Chunk from "effect/Chunk"
 import * as Effect from "effect/Effect"
 import * as ExecutionStrategy from "effect/ExecutionStrategy"
 import * as Exit from "effect/Exit"
@@ -11,7 +12,7 @@ export const dieEOF = Effect.die(EOF)
 /** @internal */
 export const isEOFCause = <E>(cause: Cause.Cause<E>): cause is Cause.Die & {
   readonly defect: typeof EOF
-} => cause._tag === "Die" && cause.defect === EOF
+} => (cause._tag === "Die" && cause.defect === EOF) || Chunk.contains(Cause.defects(cause), EOF)
 
 /** @internal */
 export const rescueEOF = <E>(

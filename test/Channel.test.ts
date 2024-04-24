@@ -27,4 +27,33 @@ describe("Channel", () => {
         assert.strictEqual(yield* _(Ref.get(consumed)), 10)
       }))
   })
+
+  describe("finalization", () => {
+    it.effect("ensuring", () =>
+      Effect.gen(function*(_) {
+        const ref = yield* _(Ref.make<ReadonlyArray<string>>([]))
+        const event = (label: string) => Ref.update(ref, (array) => [...array, label])
+        const channel = Channel.fromEffect(event("acquire1")).pipe(
+          Channel.ensuring(() => event("release11")),
+          Channel.ensuring(() => event("release12")),
+          Channel.flatMap(() =>
+            Channel.fromEffect(event("acquire2")).pipe(
+              Channel.ensuring(() => event("release2"))
+            )
+          )
+        )
+        const result = yield* _(
+          Channel.runDrain(Channel.take(channel, 1)),
+          Effect.zipRight(Ref.get(ref))
+        )
+        console.log(result)
+        assert.deepStrictEqual(result, [
+          "acquire1",
+          "acquire2",
+          "release2",
+          "release11",
+          "release12"
+        ])
+      }))
+  })
 })
